@@ -1,0 +1,23 @@
+# --- Python Specific ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# --- Data Files (CRITICAL) ---
+# 원본 및 합성된 BIN 데이터는 용량이 크므로 절대 커밋하지 않음
+data/raw/*.bin
+data/synthetic/*.bin
+
+# --- IDE & System ---
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# --- Temporary Files ---
+temp/
+*.tmp
+
+data
