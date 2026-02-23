@@ -21,3 +21,10 @@ temp/
 *.tmp
 
 data
+
+project_plan.md
+
+
+# --- AI agent ---
+.claude
+.serena
