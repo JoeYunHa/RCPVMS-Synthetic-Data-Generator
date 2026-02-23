@@ -29,7 +29,7 @@ NORMAL_DATA_DIR = Path("data/raw/normal")  # Default directory for normal-state 
 
 RPM_JITTER_HZ = 0.05         # ±0.05 Hz steady-state RPM variation for RCPs
 RPM_SEARCH_MIN_HZ = 20.0     # Lower bound for 1X frequency search (FFT)
-RPM_SEARCH_MAX_HZ = 50.0     # Upper bound for 1X frequency search (FFT)
+RPM_SEARCH_MAX_HZ = 70.0     # Upper bound for 1X frequency search (FFT)
 RPM_FALLBACK_HZ = 30.0       # Nominal fallback: 1800 RPM
 ADC_FULL_SCALE_V = 10.0      # Standard ICP sensor ADC full-scale voltage (+-10 V)
 SATURATION_FALLBACK = 4.0    # Fallback multiplier x base_rms when header sensitivity is absent
@@ -135,7 +135,12 @@ def run(
         if transient_cfg is not None
         else "continuous"
     )
-    tqdm.write(f"[3/5] Generating fault  →  type={fault_type}  |  severity={severity_value:.3f}  |  mode={transient_info}")
+    # Scale severity relative to the signal's own RMS so that WARNING (1.5×) and
+    # CRITICAL (3.0×) carry consistent physical meaning across different sensor
+    # gains, ADC ranges, and unit conventions stored in the BIN file.
+    scaled_severity = severity_value * base_rms
+
+    tqdm.write(f"[3/5] Generating fault  →  type={fault_type}  |  severity={severity_value:.3f}  |  scaled={scaled_severity:.5f}  |  mode={transient_info}")
 
     generator = FaultGenerator(
         fs=fs,
@@ -152,11 +157,11 @@ def run(
         phase = np.pi / 2 if (ch_idx % 2 == 1) else 0.0
 
         if fault_type == "unbalance":
-            f_sig = generator.generate_unbalance(severity=severity_value, phase=phase, transient=transient_cfg)
+            f_sig = generator.generate_unbalance(severity=scaled_severity, phase=phase, transient=transient_cfg)
         elif fault_type == "misalignment":
-            f_sig = generator.generate_misalignment(severity=severity_value, phase=phase, transient=transient_cfg)
+            f_sig = generator.generate_misalignment(severity=scaled_severity, phase=phase, transient=transient_cfg)
         elif fault_type == "oil_whip":
-            f_sig = generator.generate_oil_whip(severity=severity_value, phase=phase, transient=transient_cfg)
+            f_sig = generator.generate_oil_whip(severity=scaled_severity, phase=phase, transient=transient_cfg)
         else:
             raise ValueError(f"Unknown fault type: {fault_type!r}")
 
@@ -290,6 +295,16 @@ def main() -> None:
         metavar="N",
         help="[transient] Silent rotation cycles between bursts. (default: 10.0)",
     )
+    arg_parser.add_argument(
+        "--normal-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory containing normal-state BIN files to use as synthesis base. "
+            "Overrides the default NORMAL_DATA_DIR. Useful for separating operating "
+            "conditions (e.g. 3600 RPM vs 1200 RPM pools)."
+        ),
+    )
 
     args = arg_parser.parse_args()
 
@@ -300,9 +315,11 @@ def main() -> None:
     if args.input is not None:
         candidates = [Path(args.input)]
     else:
-        candidates = sorted(NORMAL_DATA_DIR.glob("*.bin"))
+        normal_dir = Path(args.normal_dir) if args.normal_dir else NORMAL_DATA_DIR
+        candidates = sorted(normal_dir.glob("*.bin")) + sorted(normal_dir.glob("*.BIN"))
+        candidates = sorted(set(candidates))
         if not candidates:
-            arg_parser.error(f"No .bin files found in {NORMAL_DATA_DIR}.")
+            arg_parser.error(f"No .bin/.BIN files found in {normal_dir}.")
 
     # Resolve severity mode
     range_mode = args.severity_min is not None or args.severity_max is not None

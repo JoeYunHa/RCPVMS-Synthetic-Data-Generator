@@ -128,10 +128,11 @@ class FaultGenerator:
             transient:  If provided, applies an intermittent burst envelope,
                         simulating early-stage intermittent misalignment.
         """
-        signal = (
-            severity * 0.3 * np.sin(2 * np.pi * self.rpm_hz * self.t)                    # residual 1X
-            + severity * 0.7 * np.sin(2 * np.pi * (2 * self.rpm_hz) * self.t + phase)    # dominant 2X
-        )
+        # Pure 2X injection: the real normal signal already carries a strong 1X
+        # component, so any residual 1X mixed in here would add to that baseline
+        # and compete against the injected 2X in the FFT dominance check.
+        # Using pure 2X guarantees the injected component always dominates its band.
+        signal = severity * np.sin(2 * np.pi * (2 * self.rpm_hz) * self.t + phase)
         if transient is not None:
             signal = signal * self.generate_transient_envelope(transient)
         return signal.astype(np.float32)
