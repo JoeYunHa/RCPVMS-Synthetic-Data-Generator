@@ -19,7 +19,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.core.rcpvms_parser import RCPVMSParser
-from src.core.generator import FaultGenerator, TransientConfig
+from src.core.generator import JeffcottGenerator, JeffcottParams, TransientConfig
 from src.core.synthesizer import RCPVMSSynthesizer
 from src.models.fault_configs import FAULT_MODELS, Severity
 
@@ -89,6 +89,65 @@ def compute_clip_range(extra: dict, base_rms: float) -> tuple[float, float]:
     return -clip_max, clip_max
 
 
+def compute_jeffcott_forcing(
+    signal: np.ndarray,
+    fs: int,
+    rpm_hz: float,
+    params: JeffcottParams,
+    fault_type: str = "unbalance",
+) -> float:
+    """
+    Calibrates the Jeffcott forcing amplitude to the fault-specific frequency band.
+
+    Strategy (per fault type):
+        unbalance    → calibrate from 1X band, magnify at 1X
+                       severity=1 ≡ fault 1X response = existing 1X amplitude
+        misalignment → calibrate from 1X amplitude, magnify at 2X
+                       severity=1 ≡ fault 2X response = existing 1X amplitude
+                       → guarantees 2X dominates 1X for severity ≥ 1.5
+        oil_whip     → calibrate from 1X amplitude, magnify at 0.45X
+                       severity=1 ≡ fault 0.45X response = existing 1X amplitude
+                       → guarantees 0.45X dominates 1X for severity ≥ 1.2
+
+    This fault-specific calibration compensates for the H(r) difference between
+    fault frequencies, preventing under-injection when the fault frequency's
+    magnification factor is lower than 1X (e.g., 2X above critical speed).
+
+    Falls back to signal RMS if the 1X FFT peak cannot be located.
+    """
+    n = len(signal)
+    fft_mag = np.abs(np.fft.rfft(signal)) * 2.0 / n
+    freqs = np.fft.rfftfreq(n, d=1.0 / fs)
+
+    # Reference amplitude: always the 1X peak of the REAL signal
+    mask_1x = np.abs(freqs - rpm_hz) <= 2.0
+    if not np.any(mask_1x):
+        return float(np.sqrt(np.mean(signal**2)))
+    A_1x = float(np.max(fft_mag[mask_1x]))
+
+    omega = 2.0 * np.pi * rpm_hz
+    omega_n = omega / params.freq_ratio
+
+    # Select the magnification frequency based on fault type
+    if fault_type == "misalignment":
+        omega_exc = 2.0 * omega          # fault response is at 2X
+    elif fault_type == "oil_whip":
+        omega_exc = 0.45 * omega         # fault response is at 0.45X
+    else:                                # unbalance
+        omega_exc = omega                # fault response is at 1X
+
+    r = omega_exc / omega_n
+    H = 1.0 / np.sqrt((1.0 - r**2) ** 2 + (2.0 * params.zeta * r) ** 2)
+
+    if H < 1e-9 or A_1x < 1e-9:
+        return float(np.sqrt(np.mean(signal**2)))
+
+    # F₀ = A_1x / H(fault_freq)
+    # → severity × F₀ × H(fault_freq) = severity × A_1x
+    # → fault component at fault_freq equals (severity × A_1x)
+    return A_1x / H
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def run(
@@ -129,43 +188,59 @@ def run(
 
     tqdm.write(f"      1X={rpm_hz:.3f} Hz  |  RMS={base_rms:.5f}  |  noise σ={noise_sigma:.5f}")
 
-    # ── 3. Fault Generation ───────────────────────────────────────────────────
+    # ── 3. Fault Generation (Jeffcott Rotor Model) ────────────────────────────
     transient_info = (
         f"transient(active={transient_cfg.active_cycles}cyc, silent={transient_cfg.silent_cycles}cyc)"
         if transient_cfg is not None
         else "continuous"
     )
-    # Scale severity relative to the signal's own RMS so that WARNING (1.5×) and
-    # CRITICAL (3.0×) carry consistent physical meaning across different sensor
-    # gains, ADC ranges, and unit conventions stored in the BIN file.
-    scaled_severity = severity_value * base_rms
 
-    tqdm.write(f"[3/5] Generating fault  →  type={fault_type}  |  severity={severity_value:.3f}  |  scaled={scaled_severity:.5f}  |  mode={transient_info}")
+    # Jeffcott calibration:
+    #   1. Back-calculate physical forcing amplitude F₀ from the real signal's 1X peak
+    #      (F₀ = A_1x / H(ω), where H(ω) is the Jeffcott magnification factor)
+    #   2. Scale by severity_value so severity=1.0 means fault forcing = normal 1X forcing
+    #   This bounds fault amplitudes within physical limits and prevents over-injection.
+    jeffcott_params = JeffcottParams()
+    forcing_ref = compute_jeffcott_forcing(ref, fs, rpm_hz, jeffcott_params, fault_type)
+    scaled_forcing = severity_value * forcing_ref
 
-    generator = FaultGenerator(
+    tqdm.write(
+        f"[3/5] Generating fault  →  type={fault_type}  |  severity={severity_value:.3f}"
+        f"  |  forcing={scaled_forcing:.5f}  |  mode={transient_info}"
+    )
+
+    generator = JeffcottGenerator(
         fs=fs,
         rpm_hz=rpm_hz,
         n_samples=n_samples,
+        params=jeffcott_params,
         jitter_hz=RPM_JITTER_HZ,
     )
 
-    fault_signals = []
-    for ch_idx in range(total_ch):
-        # Within each X/Y bearing-plane pair, offset the Y-channel (odd index)
-        # by 90° so the injected component forms a circular orbit.
-        # Channels beyond the first pair reuse the same 0°/90° pattern.
-        phase = np.pi / 2 if (ch_idx % 2 == 1) else 0.0
+    # generate_*() returns (x_signal, y_signal): a physically-valid X-Y pair.
+    # Phase lag is derived from system damping (not hard-coded), and the orbit
+    # shape matches rotor dynamics theory (circle / figure-8 / precessing ellipse).
+    if fault_type == "unbalance":
+        x_fault, y_fault = generator.generate_unbalance(
+            amplitude=scaled_forcing, transient=transient_cfg
+        )
+    elif fault_type == "misalignment":
+        x_fault, y_fault = generator.generate_misalignment(
+            amplitude=scaled_forcing, transient=transient_cfg
+        )
+    elif fault_type == "oil_whip":
+        x_fault, y_fault = generator.generate_oil_whip(
+            amplitude=scaled_forcing, transient=transient_cfg
+        )
+    else:
+        raise ValueError(f"Unknown fault type: {fault_type!r}")
 
-        if fault_type == "unbalance":
-            f_sig = generator.generate_unbalance(severity=scaled_severity, phase=phase, transient=transient_cfg)
-        elif fault_type == "misalignment":
-            f_sig = generator.generate_misalignment(severity=scaled_severity, phase=phase, transient=transient_cfg)
-        elif fault_type == "oil_whip":
-            f_sig = generator.generate_oil_whip(severity=scaled_severity, phase=phase, transient=transient_cfg)
-        else:
-            raise ValueError(f"Unknown fault type: {fault_type!r}")
-
-        fault_signals.append(f_sig)
+    # Assign X/Y signals to channels based on bearing-plane pairing.
+    # Even-index channels → X-axis (x_fault)
+    # Odd-index  channels → Y-axis (y_fault)
+    fault_signals = [
+        x_fault if ch_idx % 2 == 0 else y_fault for ch_idx in range(total_ch)
+    ]
 
     # ── 4. Fault Injection ────────────────────────────────────────────────────
     tqdm.write("[4/5] Injecting fault...")
@@ -176,12 +251,12 @@ def run(
 
     synthetic_channels = []
     for real, fault in zip(channels_raw, fault_signals):
-        # severity.value       → amplitude scale of the fault waveform (FaultGenerator)
-        # fault_cfg.default_gain → mixing ratio of fault into real signal (inject_fault)
+        # gain=1.0: the Jeffcott calibration has already set the physically-correct
+        # fault amplitude. No additional mixing gain is needed.
         synthetic = synthesizer.inject_fault(
             real_signal=real,
             fault_signal=fault,
-            gain=fault_cfg.default_gain,
+            gain=1.0,
             clip_range=clip_range,
         )
         synthetic_channels.append(synthetic)
@@ -376,7 +451,13 @@ def main() -> None:
             severity_label = severity_label_fixed
 
         input_path = str(random.choice(candidates))
-        stem = f"{args.fault}_{severity_label}{transient_suffix}"
+        # In range mode, severity varies per file — omit it from the filename
+        # so alphabetical sort in validate_synthetic.py does not accidentally
+        # select only the lowest-severity files.
+        if range_mode:
+            stem = f"{args.fault}{transient_suffix}"
+        else:
+            stem = f"{args.fault}_{severity_label}{transient_suffix}"
         output_path = str(out_dir / f"{stem}_{i:0{n_digits}d}.bin")
 
         try:
