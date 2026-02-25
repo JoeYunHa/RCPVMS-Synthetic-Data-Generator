@@ -70,6 +70,21 @@ class JeffcottParams:
     zeta: float = 0.05
     freq_ratio: float = 0.70
 
+    # Bearing stiffness anisotropy: ωny / ωnx  (1.0 = isotropic, <1 = Y softer)
+    # Typical range for asymmetric journal bearings: 0.70 – 0.90.
+    # Drives different H(r) and φ(r) in X vs Y → elliptical / tilted orbit.
+    kappa: float = 1.0
+
+    # Self-excitation amplitude growth time-constant [s].
+    # 0.0 = instant steady-state (legacy behaviour).
+    # Finite τ → A(t) = A_max × (1 − e^(−t/τ))  replicates positive-feedback
+    # energy injection from the oil-film.
+    oil_whip_growth_tau: float = 2.0
+
+    # Number of sub-synchronous whirl cycles over which instantaneous frequency
+    # chirps from 0.88×freq_ratio×Ω to the locked value.  0 = pre-locked.
+    oil_whip_lockin_cycles: float = 10.0
+
 
 class JeffcottGenerator:
     """
@@ -120,7 +135,11 @@ class JeffcottGenerator:
 
         p = params if params is not None else JeffcottParams()
         self.zeta = float(p.zeta)
-        self.omega_n = self.omega / float(p.freq_ratio)  # first critical speed [rad/s]
+        self.omega_n = self.omega / float(p.freq_ratio)   # X-axis critical speed [rad/s]
+        self.omega_ny = self.omega_n * float(p.kappa)     # Y-axis critical speed [rad/s]
+        self.kappa = float(p.kappa)
+        self.oil_whip_growth_tau = float(p.oil_whip_growth_tau)
+        self.oil_whip_lockin_cycles = float(p.oil_whip_lockin_cycles)
 
     # ── Jeffcott Transfer Functions ───────────────────────────────────────────
 
@@ -146,7 +165,24 @@ class JeffcottGenerator:
         r = omega_exc / self.omega_n
         return np.arctan2(2.0 * self.zeta * r, 1.0 - r**2)
 
-    # ── Transient Envelope ────────────────────────────────────────────────────
+    # ── Y-axis Transfer Functions (anisotropic stiffness) ────────────────────
+
+    def _mag_y(self, omega_exc: float) -> float:
+        """Amplitude magnification H(r) for the Y axis (uses omega_ny).
+
+        Identical to _magnification() when kappa == 1.0 (isotropic).
+        When kappa < 1.0, omega_ny < omega_n, so the Y-axis resonance peak
+        sits at a lower excitation frequency than the X-axis peak.
+        """
+        r = omega_exc / self.omega_ny
+        return 1.0 / np.sqrt((1.0 - r**2) ** 2 + (2.0 * self.zeta * r) ** 2)
+
+    def _phi_y(self, omega_exc: float) -> float:
+        """Phase lag φ(r) for the Y axis (uses omega_ny)."""
+        r = omega_exc / self.omega_ny
+        return np.arctan2(2.0 * self.zeta * r, 1.0 - r**2)
+
+    # ── Transient Envelope ───────────────────────────────────────────────────
 
     def generate_transient_envelope(self, config: TransientConfig) -> np.ndarray:
         """
@@ -227,22 +263,27 @@ class JeffcottGenerator:
         residual_1x_ratio: float = 0.25,
         transient: "TransientConfig | None" = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Misalignment: dominant 2X + residual 1X → figure-8 (banana) orbit.
+        """Misalignment: dominant 2X + residual 1X → asymmetric figure-8 orbit.
 
-        Physical model:
-            Angular shaft misalignment creates periodic angular stiffness variation
-            at 2X frequency. The shaft response combines:
-              · Dominant 2X: from the periodic stiffness excitation
-              · Residual 1X: coupling artifact (typically 15–35% of 2X amplitude)
+        Physical model (with directional stiffness):
+            Angular shaft misalignment creates a periodic angular stiffness variation
+            at 2X frequency.  Anisotropic bearing stiffness (kappa = ωny/ωnx ≠ 1)
+            gives X and Y axes different natural frequencies and therefore different
+            transfer functions H(r) and φ(r) at the same excitation frequency.
 
-            Jeffcott response at each harmonic:
-                X(t) = A₂·cos(2ωt + phase − φ₂) + A₁·cos(ωt + phase − φ₁)
-                Y(t) = A₂·sin(2ωt + phase − φ₂) + A₁·sin(ωt + phase − φ₁)
+            This breaks the orbit symmetry: instead of a geometrically symmetric
+            figure-8, the orbit becomes a tilted or elongated banana shape, matching
+            real RCP misalignment signatures.
 
-            → figure-8 orbit. The 2X Y-component oscillates twice per revolution,
-              while the 1X residual sweeps once, creating the characteristic
-              banana/figure-8 shape in the orbit plot.
+            Dominant 2X:
+                X(t) = Ax2·cos(2ωt + phase − φx2)   [uses ωnx]
+                Y(t) = Ay2·sin(2ωt + phase − φy2)   [uses ωny ≠ ωnx when kappa≠1]
+
+            Residual 1X coupling (typically 15–35% of 2X amplitude):
+                X(t) += Ax1·cos(ωt + phase − φx1)
+                Y(t) += Ay1·sin(ωt + phase − φy1)
+
+            With kappa=1 (isotropic) the original symmetric figure-8 is recovered.
 
         Args:
             amplitude:         Primary forcing amplitude at 2X.
@@ -256,21 +297,34 @@ class JeffcottGenerator:
         """
         omega_2x = 2.0 * self.omega
 
-        # Dominant 2X component
-        H2 = self._magnification(omega_2x)
-        phi2 = self._phase_lag(omega_2x)
-        A2 = amplitude * H2
+        # ── Dominant 2X: separate H and φ in X vs Y (directional stiffness) ──
+        Hx2   = self._magnification(omega_2x)
+        phix2 = self._phase_lag(omega_2x)
+        Hy2   = self._mag_y(omega_2x)       # differs from Hx2 when kappa ≠ 1
+        phiy2 = self._phi_y(omega_2x)
 
-        # Residual 1X coupling component
-        H1 = self._magnification(self.omega)
-        phi1 = self._phase_lag(self.omega)
-        A1 = amplitude * residual_1x_ratio * H1
+        Ax2 = amplitude * Hx2
+        Ay2 = amplitude * Hy2
 
-        x = A2 * np.cos(omega_2x * self.t + phase - phi2) + A1 * np.cos(
-            self.omega * self.t + phase - phi1
+        # ── Residual 1X coupling: defined as output amplitude ratio ────────────
+        # residual_1x_ratio = fraction of the OBSERVABLE 2X output amplitude.
+        # Using forcing-ratio (× Hx1/Hy1) would amplify residual near Y resonance
+        # when kappa < 1 (ωny close to ω), making 1X dominate over 2X in Y channels.
+        # Output-ratio definition is physically correct: real misalignment shows
+        # 15–35% of the 2X displacement amplitude as residual 1X.
+        phix1 = self._phase_lag(self.omega)
+        phiy1 = self._phi_y(self.omega)
+
+        Ax1 = Ax2 * residual_1x_ratio
+        Ay1 = Ay2 * residual_1x_ratio
+
+        x = (
+            Ax2 * np.cos(omega_2x * self.t + phase - phix2)
+            + Ax1 * np.cos(self.omega * self.t + phase - phix1)
         )
-        y = A2 * np.sin(omega_2x * self.t + phase - phi2) + A1 * np.sin(
-            self.omega * self.t + phase - phi1
+        y = (
+            Ay2 * np.sin(omega_2x * self.t + phase - phiy2)
+            + Ay1 * np.sin(self.omega * self.t + phase - phiy1)
         )
 
         if transient is not None:
@@ -287,40 +341,79 @@ class JeffcottGenerator:
         freq_ratio: float = 0.45,
         transient: "TransientConfig | None" = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Oil Whip: sub-synchronous forward whirl at ≈0.45X → precessing ellipse.
+        """Oil Whip: sub-synchronous forward whirl with self-excitation and lock-in.
 
-        Physical model:
-            Journal bearing oil film instability causes forward whirl at
-            ω_whip ≈ 0.45 × ω_run (approximately half running speed).
+        Physical model (enhanced):
+            Real oil whip exhibits two characteristics absent in a pure steady-state
+            Jeffcott model:
 
-            The Jeffcott magnification H(ω_whip) can become very large when
-            ω_whip approaches ω_n (resonance lock-in), which is physically
-            consistent with the severity of real oil whip events.
+            1. Lock-in (주파수 고착):
+               Oil *whirl* tracks the running speed as ≈ freq_ratio × Ω.  When the
+               threshold condition is met, the sub-synchronous frequency abruptly
+               "snaps" to a fixed value ω_locked = freq_ratio × Ω and no longer
+               tracks speed changes.  The snap is modelled as a linear frequency
+               chirp from (0.88 × freq_ratio × Ω) → ω_locked over the first
+               `oil_whip_lockin_cycles` sub-synchronous cycles, after which phase
+               accumulates at constant ω_locked.
 
-            X(t) = F₀·H(ω_w)·cos(ω_w·t + phase − φ_w)
-            Y(t) = F₀·H(ω_w)·sin(ω_w·t + phase − φ_w)
+            2. Self-excitation / amplitude growth (자려진동):
+               The oil-film provides net positive energy to the rotor.  Amplitude
+               builds up exponentially:
 
-            → The orbit precesses at ω_whip, creating an elliptical shape
-              distinct from the 1X synchronous ellipse in the orbit plot.
+                   A(t) = A_max × (1 − e^(−t / τ))
+
+               where τ = oil_whip_growth_tau.  τ=0 reverts to instant steady-state.
+
+            Full time-domain model:
+                φ(t) = ∫ ω_inst(t') dt' + phase₀   [chirp → constant]
+                X(t) = A_max · (1−e^{−t/τ}) · cos(φ(t) − φ_w)
+                Y(t) = A_max · (1−e^{−t/τ}) · sin(φ(t) − φ_w)
 
         Args:
-            amplitude:  Sub-synchronous forcing amplitude F₀.
+            amplitude:  Sub-synchronous forcing amplitude F₀ (calibrated by main.py).
             phase:      Initial phase offset (rad).
-            freq_ratio: Whirl-to-running-speed ratio (0.43–0.48). Default 0.45.
+            freq_ratio: Locked whirl-to-running-speed ratio (0.43–0.48). Default 0.45.
             transient:  Optional intermittent burst envelope.
 
         Returns:
             (x_signal, y_signal): matched X-Y channel pair.
         """
-        omega_whip = self.omega * freq_ratio
+        omega_locked = self.omega * freq_ratio
 
-        H_w = self._magnification(omega_whip)
-        phi_w = self._phase_lag(omega_whip)
-        A_w = amplitude * H_w
+        # ── Phase accumulation: chirp during lock-in acquisition ──────────────
+        if self.oil_whip_lockin_cycles > 0.0 and omega_locked > 0.0:
+            # How many seconds the chirp lasts
+            T_cycle_locked = (2.0 * np.pi) / omega_locked   # one sub-sync period
+            T_lockin = self.oil_whip_lockin_cycles * T_cycle_locked
+            n_lockin = min(int(T_lockin * self.fs), self.n_samples)
 
-        x = A_w * np.cos(omega_whip * self.t + phase - phi_w)
-        y = A_w * np.sin(omega_whip * self.t + phase - phi_w)
+            omega_inst = np.empty(self.n_samples, dtype=np.float64)
+            if n_lockin > 0:
+                # Frequency ramps from 88 % of locked value up to locked value
+                omega_inst[:n_lockin] = np.linspace(
+                    omega_locked * 0.88, omega_locked, n_lockin
+                )
+            omega_inst[n_lockin:] = omega_locked
+
+            # Integrate instantaneous frequency → unwrapped phase
+            phase_arr = np.cumsum(omega_inst) / self.fs + phase
+        else:
+            # Already locked: constant sub-synchronous frequency
+            phase_arr = omega_locked * self.t + phase
+
+        # ── Jeffcott transfer function at locked frequency ────────────────────
+        H_w   = self._magnification(omega_locked)
+        phi_w = self._phase_lag(omega_locked)
+        A_w   = amplitude * H_w
+
+        # ── Self-excitation growth envelope ───────────────────────────────────
+        if self.oil_whip_growth_tau > 0.0:
+            growth = 1.0 - np.exp(-self.t / self.oil_whip_growth_tau)
+        else:
+            growth = np.ones(self.n_samples, dtype=np.float64)
+
+        x = A_w * growth * np.cos(phase_arr - phi_w)
+        y = A_w * growth * np.sin(phase_arr - phi_w)
 
         if transient is not None:
             env = self.generate_transient_envelope(transient)

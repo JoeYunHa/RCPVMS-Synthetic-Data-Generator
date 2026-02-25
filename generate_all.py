@@ -15,12 +15,13 @@ RCPVMS 합성 데이터 일괄 생성 스크립트
   data/synthetic/1200rpm/oil_whip/
 
 Usage:
-    venv\\Scripts\\python.exe generate_all.py [--dry-run]
+    venv\\Scripts\\python.exe generate_all.py [--kappa 0.75] [--dry-run]
+    venv\\Scripts\\python.exe generate_all.py --rpm 3600rpm --mode continuous
+    venv\\Scripts\\python.exe generate_all.py --dry-run
 """
 
 import sys
 import os
-import glob
 import shutil
 import subprocess
 import argparse
@@ -60,6 +61,31 @@ GEN = {
 }
 
 SEP = "=" * 64
+
+
+# ── 기존 합성 데이터 삭제 ─────────────────────────────────────────────────────
+
+def clean_synthetic_dirs(
+    rpm_targets: list[str],
+    fault_types: list[str],
+    dry_run: bool = False,
+) -> None:
+    """선택된 RPM × 결함 조합의 synthetic 출력 디렉토리를 삭제한다."""
+    removed = 0
+    for rpm in rpm_targets:
+        for fault in fault_types:
+            target = Path(f"data/synthetic/{rpm}/{fault}")
+            if not target.exists():
+                continue
+            n_files = len(list(target.glob("*.bin")))
+            if dry_run:
+                print(f"  [DRY-RUN] 삭제 예정: {target}  ({n_files} 파일)")
+            else:
+                shutil.rmtree(target)
+                print(f"  삭제됨: {target}  ({n_files} 파일)")
+                removed += n_files
+    if not dry_run:
+        print(f"  총 {removed} 파일 삭제 완료")
 
 
 # ── RPM 별 디렉토리 구성 ──────────────────────────────────────────────────────
@@ -106,6 +132,7 @@ def run_gen(
     rpm_cond: str,
     mode_name: str,
     cfg: dict,
+    kappa: float = 1.0,
     dry_run: bool = False,
 ) -> float:
     """main.py를 호출해 fault 데이터를 생성한다. 소요 시간(초)을 반환."""
@@ -120,6 +147,7 @@ def run_gen(
         "--count",        str(cfg["count"]),
         "--normal-dir",   normal_dir,
         "--output-dir",   out_dir,
+        "--kappa",        str(kappa),
     ]
 
     if cfg.get("transient"):
@@ -131,7 +159,7 @@ def run_gen(
 
     label = f"{rpm_cond} / {fault} / {mode_name}"
     print(f"\n  ▶ {label}  (count={cfg['count']}, "
-          f"sev=[{cfg['sev_min']},{cfg['sev_max']}])")
+          f"sev=[{cfg['sev_min']},{cfg['sev_max']}], kappa={kappa})")
 
     if dry_run:
         print(f"    [DRY-RUN] {' '.join(cmd)}")
@@ -160,22 +188,52 @@ def main():
         "--mode", choices=["continuous", "transient", "all"], default="all",
         help="연속(continuous) / 과도(transient) / 전체(all)",
     )
+    ap.add_argument(
+        "--kappa",
+        type=float,
+        default=0.75,
+        metavar="K",
+        help=(
+            "방향성 강성 이방성 비율 kappa = ωny/ωnx (기본: 0.75). "
+            "1.0 = 등방성(isotropic), 권장 범위: 0.70-0.90. "
+            "misalignment 궤도를 비대칭 banana 형상으로 개선."
+        ),
+    )
+    ap.add_argument(
+        "--fault",
+        nargs="+",
+        choices=FAULT_TYPES,
+        default=None,
+        metavar="FAULT",
+        help=(
+            f"생성할 결함 유형 (기본: 전체). "
+            f"예: --fault misalignment  또는  --fault unbalance misalignment"
+        ),
+    )
     args = ap.parse_args()
 
-    rpm_targets  = list(RPM_PATTERNS.keys()) if args.rpm == "both" else [args.rpm]
-    mode_targets = list(GEN.keys())          if args.mode == "all"  else [args.mode]
+    rpm_targets   = list(RPM_PATTERNS.keys()) if args.rpm   == "both" else [args.rpm]
+    mode_targets  = list(GEN.keys())          if args.mode  == "all"  else [args.mode]
+    fault_targets = args.fault if args.fault is not None else FAULT_TYPES
 
     total_files = sum(
-        GEN[m]["count"] * len(FAULT_TYPES) * len(rpm_targets)
+        GEN[m]["count"] * len(fault_targets) * len(rpm_targets)
         for m in mode_targets
     )
 
     print(SEP)
-    print(" RCPVMS 합성 데이터 일괄 생성")
+    print(" RCPVMS 합성 데이터 일괄 생성 (개선된 물리 모델)")
     print(f" RPM 조건 : {rpm_targets}")
     print(f" 생성 모드: {mode_targets}")
+    print(f" 결함 유형: {fault_targets}")
+    print(f" kappa    : {args.kappa}  (방향성 강성 이방성)")
+    print(f" oil whip : growth_tau=2.0s, lockin_cycles=10  (JeffcottParams 기본값)")
     print(f" 예상 파일: {total_files} 개")
     print(SEP)
+
+    # 0. 기존 합성 데이터 삭제
+    print("\n[0] 기존 합성 데이터 삭제")
+    clean_synthetic_dirs(rpm_targets, fault_targets, dry_run=args.dry_run)
 
     # 1. RPM 별 normal 디렉토리 구성
     print("\n[1] RPM 별 정상 데이터 디렉토리 구성")
@@ -197,10 +255,11 @@ def main():
               f"{'  [Transient]' if cfg.get('transient') else ''})")
 
         for rpm_cond in rpm_targets:
-            for fault in FAULT_TYPES:
+            for fault in fault_targets:
                 try:
                     elapsed = run_gen(
                         fault, rpm_cond, mode_name, cfg,
+                        kappa=args.kappa,
                         dry_run=args.dry_run,
                     )
                     total_elapsed += elapsed
@@ -216,7 +275,7 @@ def main():
     if not args.dry_run:
         print("\n 출력 디렉토리별 파일 수:")
         for rpm_cond in rpm_targets:
-            for fault in FAULT_TYPES:
+            for fault in fault_targets:
                 out = Path(f"data/synthetic/{rpm_cond}/{fault}")
                 cnt = len(list(out.glob("*.bin"))) if out.exists() else 0
                 print(f"  {out}:  {cnt} 파일")

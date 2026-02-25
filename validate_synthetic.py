@@ -63,8 +63,8 @@ FAULT_DOMINANT = {
     "abnormal":     None,
 }
 
-# 기본값(이전 코드 호환)
-SOURCES = CONDITION_SOURCES["mixed"]
+# 기본값: 3600rpm (mixed는 RPM 분리 전 구 경로 구조용으로만 유지)
+SOURCES = CONDITION_SOURCES["3600rpm"]
 
 SEP = "=" * 66
 
@@ -294,9 +294,9 @@ def main():
     p.add_argument(
         "--condition",
         choices=list(CONDITION_SOURCES.keys()),
-        default="mixed",
+        default="3600rpm",
         help=(
-            "운전 조건 선택: 'mixed'(기존 혼합), '3600rpm'(2506계), '1200rpm'(2511계). "
+            "운전 조건 선택: '3600rpm'(2506계), '1200rpm'(2511계), 'mixed'(구 경로 호환). "
             "각 조건에 맞는 정상/합성 파일 경로가 자동 설정됩니다."
         ),
     )

@@ -156,6 +156,7 @@ def run(
     severity_value: float,
     output_path: str,
     transient_cfg: TransientConfig | None = None,
+    kappa: float = 1.0,
 ) -> None:
     fault_cfg = FAULT_MODELS[fault_type]
 
@@ -200,7 +201,7 @@ def run(
     #      (F₀ = A_1x / H(ω), where H(ω) is the Jeffcott magnification factor)
     #   2. Scale by severity_value so severity=1.0 means fault forcing = normal 1X forcing
     #   This bounds fault amplitudes within physical limits and prevents over-injection.
-    jeffcott_params = JeffcottParams()
+    jeffcott_params = JeffcottParams(kappa=kappa)
     forcing_ref = compute_jeffcott_forcing(ref, fs, rpm_hz, jeffcott_params, fault_type)
     scaled_forcing = severity_value * forcing_ref
 
@@ -380,6 +381,17 @@ def main() -> None:
             "conditions (e.g. 3600 RPM vs 1200 RPM pools)."
         ),
     )
+    arg_parser.add_argument(
+        "--kappa",
+        type=float,
+        default=1.0,
+        metavar="K",
+        help=(
+            "Bearing stiffness anisotropy ratio kappa = ωny/ωnx (default 1.0 = isotropic). "
+            "Typical range 0.70-0.90 for asymmetric journal bearings. "
+            "Affects misalignment orbit shape: kappa<1 produces a tilted banana orbit."
+        ),
+    )
 
     args = arg_parser.parse_args()
 
@@ -467,6 +479,7 @@ def main() -> None:
                 severity_value=severity_value,
                 output_path=output_path,
                 transient_cfg=transient_cfg,
+                kappa=args.kappa,
             )
         except Exception as e:
             tqdm.write(f"[Error] {output_path}: {e}", file=sys.stderr)
