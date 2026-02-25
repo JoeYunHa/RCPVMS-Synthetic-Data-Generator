@@ -182,13 +182,25 @@ class HierarchicalLoss(nn.Module):
 
     Parameters
     ----------
-    lambda_fault : weight for the fault-type CE term (default 1.0)
+    lambda_fault        : weight for the fault-type CE term (default 1.0)
+    binary_class_weight : optional 1-D FloatTensor [w_normal, w_fault] passed
+                          to CrossEntropyLoss for binary stage.  Use this
+                          instead of WeightedRandomSampler to handle class
+                          imbalance while keeping natural batch distribution.
     """
 
-    def __init__(self, lambda_fault: float = 1.0) -> None:
+    def __init__(
+        self,
+        lambda_fault: float = 1.0,
+        binary_class_weight: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
+    ) -> None:
         super().__init__()
         self.lambda_fault = lambda_fault
-        self.ce = nn.CrossEntropyLoss()
+        self.ce_binary = nn.CrossEntropyLoss(
+            weight=binary_class_weight, label_smoothing=label_smoothing
+        )
+        self.ce_fault = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     def forward(
         self,
@@ -201,11 +213,11 @@ class HierarchicalLoss(nn.Module):
 
         fault_loss is 0.0 when no fault samples exist in the batch.
         """
-        l_binary = self.ce(binary_logits, binary_labels)
+        l_binary = self.ce_binary(binary_logits, binary_labels)
 
         fault_mask = binary_labels == 1
         if fault_mask.any():
-            l_fault = self.ce(
+            l_fault = self.ce_fault(
                 fault_logits[fault_mask], fault_labels[fault_mask]
             )
         else:

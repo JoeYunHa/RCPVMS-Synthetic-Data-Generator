@@ -109,7 +109,7 @@ def collect_tasks(rpms: list[str]) -> list[tuple[Path, Path, str]]:
         # Normal
         normal_dir = RPM_NORMAL_DIRS.get(rpm)
         if normal_dir and normal_dir.exists():
-            for p in sorted(normal_dir.glob("*.BIN")) + sorted(normal_dir.glob("*.bin")):
+            for p in sorted(set(normal_dir.glob("*.BIN")) | set(normal_dir.glob("*.bin"))):
                 out = ORBIT_ROOT / rpm / "normal" / (p.stem + ".npy")
                 tasks.append((p, out, "normal"))
 
