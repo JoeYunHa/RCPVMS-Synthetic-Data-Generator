@@ -69,29 +69,53 @@ def make_orbit_stack(
     mils_per_v: float = 10.0,
     axis_lim: float = DEFAULT_AXIS_LIM,
     img_size: int = DEFAULT_IMG_SIZE,
+    adaptive: bool = True,
+    adaptive_percentile: float = 99.5,
+    adaptive_min: float = 0.1,
 ) -> np.ndarray:
     """Build a (N_bearings, img_size, img_size) float32 orbit image stack.
 
     Parameters
     ----------
-    channels   : list of per-channel signal arrays from
-                 RCPVMSParser.read_all_channels()
-    pairs      : sequence of (ch_x, ch_y) index tuples
-    mils_per_v : sensitivity factor from BIN header (mils per volt)
-    axis_lim   : half-width of the orbit axis in mils
-    img_size   : pixel dimension of each orbit image
+    channels             : list of per-channel signal arrays
+    pairs                : sequence of (ch_x, ch_y) index tuples
+    mils_per_v           : sensitivity factor from BIN header (mils per volt)
+    axis_lim             : half-width in mils — used as-is when adaptive=False,
+                           or as fallback when no valid channels exist
+    img_size             : pixel dimension of each orbit image
+    adaptive             : if True (default), compute a per-file global axis_lim
+                           from the p99.5 orbit radius across ALL valid bearing
+                           pairs, then apply the same scale to every channel.
+                           Preserves inter-bearing relative amplitude while
+                           preventing clipping / empty-image artefacts.
+    adaptive_percentile  : percentile of orbit radius used for auto-scaling
+    adaptive_min         : minimum axis_lim to avoid extreme zoom on noise (mils)
 
     Returns
     -------
     stack : ndarray, shape (len(pairs), img_size, img_size), float32
             Slices with missing or empty channels are left as zeros.
     """
-    stack = np.zeros((len(pairs), img_size, img_size), dtype=np.float32)
+    # ── Step 1: convert all valid pairs to mils (single pass) ────────────────
+    mils_data: list[tuple[int, np.ndarray, np.ndarray]] = []
     for i, (ch_x, ch_y) in enumerate(pairs):
         if ch_x >= len(channels) or ch_y >= len(channels):
             continue
         if len(channels[ch_x]) == 0 or len(channels[ch_y]) == 0:
             continue
         x_mil, y_mil = volt_to_mil(channels[ch_x], channels[ch_y], mils_per_v)
+        mils_data.append((i, x_mil, y_mil))
+
+    # ── Step 2: compute per-file global axis_lim (Option A adaptive) ─────────
+    if adaptive and mils_data:
+        all_radii = np.concatenate([
+            np.sqrt(x ** 2 + y ** 2) for _, x, y in mils_data
+        ])
+        computed_lim = float(np.percentile(all_radii, adaptive_percentile))
+        axis_lim = max(computed_lim, adaptive_min)
+
+    # ── Step 3: render all channels with the shared axis_lim ─────────────────
+    stack = np.zeros((len(pairs), img_size, img_size), dtype=np.float32)
+    for i, x_mil, y_mil in mils_data:
         stack[i] = make_orbit_image(x_mil, y_mil, axis_lim, img_size)
     return stack

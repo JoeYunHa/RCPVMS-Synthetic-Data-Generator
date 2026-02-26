@@ -46,17 +46,20 @@ RPM_PATTERNS = {
 GEN = {
     "continuous": {
         "count":    100,
-        "sev_min":  0.3,
+        "sev_min":  0.5,   # 0.3 → 0.5: 저심각도 라벨 오염 제거
         "sev_max":  3.0,
         "transient": False,
     },
     "transient": {
         "count":    50,
-        "sev_min":  0.3,
+        "sev_min":  0.5,   # 0.3 → 0.5: 저심각도 라벨 오염 제거
         "sev_max":  1.5,
         "transient": True,
-        "active_cycles": 3.0,
-        "silent_cycles": 10.0,
+        # Stage 2: transient params sampled per-file from these ranges
+        "active_cycles_min": 1.0,
+        "active_cycles_max": 6.0,
+        "silent_cycles_min": 5.0,
+        "silent_cycles_max": 20.0,
     },
 }
 
@@ -132,7 +135,6 @@ def run_gen(
     rpm_cond: str,
     mode_name: str,
     cfg: dict,
-    kappa: float = 1.0,
     dry_run: bool = False,
 ) -> float:
     """main.py를 호출해 fault 데이터를 생성한다. 소요 시간(초)을 반환."""
@@ -147,19 +149,20 @@ def run_gen(
         "--count",        str(cfg["count"]),
         "--normal-dir",   normal_dir,
         "--output-dir",   out_dir,
-        "--kappa",        str(kappa),
     ]
 
     if cfg.get("transient"):
+        # Stage 2: pass transient parameter ranges for per-file sampling
         cmd += [
             "--transient",
-            "--active-cycles", str(cfg.get("active_cycles", 3.0)),
-            "--silent-cycles", str(cfg.get("silent_cycles", 10.0)),
+            "--active-cycles-min", str(cfg.get("active_cycles_min", 1.0)),
+            "--active-cycles-max", str(cfg.get("active_cycles_max", 6.0)),
+            "--silent-cycles-min", str(cfg.get("silent_cycles_min", 5.0)),
+            "--silent-cycles-max", str(cfg.get("silent_cycles_max", 20.0)),
         ]
 
     label = f"{rpm_cond} / {fault} / {mode_name}"
-    print(f"\n  ▶ {label}  (count={cfg['count']}, "
-          f"sev=[{cfg['sev_min']},{cfg['sev_max']}], kappa={kappa})")
+    print(f"\n  ▶ {label}  (count={cfg['count']}, sev=[{cfg['sev_min']},{cfg['sev_max']}])")
 
     if dry_run:
         print(f"    [DRY-RUN] {' '.join(cmd)}")
@@ -188,17 +191,7 @@ def main():
         "--mode", choices=["continuous", "transient", "all"], default="all",
         help="연속(continuous) / 과도(transient) / 전체(all)",
     )
-    ap.add_argument(
-        "--kappa",
-        type=float,
-        default=0.75,
-        metavar="K",
-        help=(
-            "방향성 강성 이방성 비율 kappa = ωny/ωnx (기본: 0.75). "
-            "1.0 = 등방성(isotropic), 권장 범위: 0.70-0.90. "
-            "misalignment 궤도를 비대칭 banana 형상으로 개선."
-        ),
-    )
+    # kappa는 main.py에서 파일마다 KAPPA_RANGE(0.70-1.00) 내 랜덤 샘플링됨 (--kappa 제거)
     ap.add_argument(
         "--fault",
         nargs="+",
@@ -226,8 +219,7 @@ def main():
     print(f" RPM 조건 : {rpm_targets}")
     print(f" 생성 모드: {mode_targets}")
     print(f" 결함 유형: {fault_targets}")
-    print(f" kappa    : {args.kappa}  (방향성 강성 이방성)")
-    print(f" oil whip : growth_tau=2.0s, lockin_cycles=10  (JeffcottParams 기본값)")
+    print(f" 물리파라미터: 파일마다 독립 랜덤 샘플링 (ζ/r₀/κ/τ/lockin/1x_ratio/whip_ratio/bearing_scale)")
     print(f" 예상 파일: {total_files} 개")
     print(SEP)
 
@@ -259,7 +251,6 @@ def main():
                 try:
                     elapsed = run_gen(
                         fault, rpm_cond, mode_name, cfg,
-                        kappa=args.kappa,
                         dry_run=args.dry_run,
                     )
                     total_elapsed += elapsed

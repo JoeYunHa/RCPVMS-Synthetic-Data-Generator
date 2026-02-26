@@ -34,6 +34,21 @@ RPM_FALLBACK_HZ = 30.0       # Nominal fallback: 1800 RPM
 ADC_FULL_SCALE_V = 10.0      # Standard ICP sensor ADC full-scale voltage (+-10 V)
 SATURATION_FALLBACK = 4.0    # Fallback multiplier x base_rms when header sensitivity is absent
 
+# ── Physical Parameter Diversity Ranges ───────────────────────────────────────
+# All Jeffcott model parameters are sampled independently per file to produce
+# diverse orbit shapes and spectral signatures across the synthetic dataset.
+ZETA_RANGE               = (0.03, 0.08)  # Viscous damping ratio ζ
+FREQ_RATIO_RANGE         = (0.55, 0.80)  # Running speed / critical speed ratio (r₀)
+KAPPA_RANGE              = (0.70, 1.00)  # Bearing stiffness anisotropy (ωny/ωnx)
+OIL_WHIP_TAU_RANGE       = (1.0,  5.0)  # Self-excitation amplitude growth τ [s]
+OIL_WHIP_LOCKIN_RANGE    = (5.0, 20.0)  # Lock-in acquisition cycles
+
+MISALIGN_1X_RATIO_RANGE   = (0.15, 0.35)  # Residual 1X / dominant 2X output amplitude ratio
+OIL_WHIP_FREQ_RATIO_RANGE = (0.43, 0.48)  # Sub-synchronous whirl / running speed ratio
+
+# Per-bearing-pair independent amplitude scale (simulates spatial fault propagation)
+BEARING_AMP_SCALE_RANGE  = (0.50, 1.50)
+
 
 # ── Feature Extraction ────────────────────────────────────────────────────────
 
@@ -156,7 +171,6 @@ def run(
     severity_value: float,
     output_path: str,
     transient_cfg: TransientConfig | None = None,
-    kappa: float = 1.0,
 ) -> None:
     fault_cfg = FAULT_MODELS[fault_type]
 
@@ -201,13 +215,25 @@ def run(
     #      (F₀ = A_1x / H(ω), where H(ω) is the Jeffcott magnification factor)
     #   2. Scale by severity_value so severity=1.0 means fault forcing = normal 1X forcing
     #   This bounds fault amplitudes within physical limits and prevents over-injection.
-    jeffcott_params = JeffcottParams(kappa=kappa)
+    # ── Stage 1: Per-file physical parameter randomization ────────────────────
+    jeffcott_params = JeffcottParams(
+        zeta=np.random.uniform(*ZETA_RANGE),
+        freq_ratio=np.random.uniform(*FREQ_RATIO_RANGE),
+        kappa=np.random.uniform(*KAPPA_RANGE),
+        oil_whip_growth_tau=np.random.uniform(*OIL_WHIP_TAU_RANGE),
+        oil_whip_lockin_cycles=np.random.uniform(*OIL_WHIP_LOCKIN_RANGE),
+    )
     forcing_ref = compute_jeffcott_forcing(ref, fs, rpm_hz, jeffcott_params, fault_type)
     scaled_forcing = severity_value * forcing_ref
 
     tqdm.write(
         f"[3/5] Generating fault  →  type={fault_type}  |  severity={severity_value:.3f}"
         f"  |  forcing={scaled_forcing:.5f}  |  mode={transient_info}"
+    )
+    tqdm.write(
+        f"      jeffcott: zeta={jeffcott_params.zeta:.3f}  r0={jeffcott_params.freq_ratio:.3f}"
+        f"  kappa={jeffcott_params.kappa:.3f}  tau={jeffcott_params.oil_whip_growth_tau:.2f}s"
+        f"  lockin={jeffcott_params.oil_whip_lockin_cycles:.1f}cyc"
     )
 
     generator = JeffcottGenerator(
@@ -221,26 +247,44 @@ def run(
     # generate_*() returns (x_signal, y_signal): a physically-valid X-Y pair.
     # Phase lag is derived from system damping (not hard-coded), and the orbit
     # shape matches rotor dynamics theory (circle / figure-8 / precessing ellipse).
+    # Random phase: each file gets a unique orbit orientation [0, 2π)
+    phase = np.random.uniform(0.0, 2.0 * np.pi)
+    tqdm.write(f"      phase={phase:.3f} rad  ({np.degrees(phase):.1f}°)")
+
     if fault_type == "unbalance":
         x_fault, y_fault = generator.generate_unbalance(
-            amplitude=scaled_forcing, transient=transient_cfg
+            amplitude=scaled_forcing, phase=phase, transient=transient_cfg
         )
     elif fault_type == "misalignment":
+        # Stage 1: per-file residual 1X ratio randomization
+        residual_1x_ratio = np.random.uniform(*MISALIGN_1X_RATIO_RANGE)
+        tqdm.write(f"      residual_1x_ratio={residual_1x_ratio:.3f}")
         x_fault, y_fault = generator.generate_misalignment(
-            amplitude=scaled_forcing, transient=transient_cfg
+            amplitude=scaled_forcing, phase=phase,
+            residual_1x_ratio=residual_1x_ratio,
+            transient=transient_cfg,
         )
     elif fault_type == "oil_whip":
+        # Stage 1: per-file sub-synchronous frequency ratio randomization
+        whip_freq_ratio = np.random.uniform(*OIL_WHIP_FREQ_RATIO_RANGE)
+        tqdm.write(f"      oil_whip_freq_ratio={whip_freq_ratio:.3f}")
         x_fault, y_fault = generator.generate_oil_whip(
-            amplitude=scaled_forcing, transient=transient_cfg
+            amplitude=scaled_forcing, phase=phase,
+            freq_ratio=whip_freq_ratio,
+            transient=transient_cfg,
         )
     else:
         raise ValueError(f"Unknown fault type: {fault_type!r}")
 
-    # Assign X/Y signals to channels based on bearing-plane pairing.
-    # Even-index channels → X-axis (x_fault)
-    # Odd-index  channels → Y-axis (y_fault)
+    # Stage 3: Per-bearing-pair amplitude modulation.
+    # Each bearing plane gets an independent amplitude scale to simulate
+    # spatial variation in fault propagation across bearing locations.
+    n_pairs = total_ch // 2
+    bearing_scales = np.random.uniform(*BEARING_AMP_SCALE_RANGE, size=n_pairs)
+    tqdm.write(f"      bearing_scales(12): {np.round(bearing_scales, 3).tolist()}")
     fault_signals = [
-        x_fault if ch_idx % 2 == 0 else y_fault for ch_idx in range(total_ch)
+        (x_fault if ch_idx % 2 == 0 else y_fault) * bearing_scales[ch_idx // 2]
+        for ch_idx in range(total_ch)
     ]
 
     # ── 4. Fault Injection ────────────────────────────────────────────────────
@@ -382,15 +426,38 @@ def main() -> None:
         ),
     )
     arg_parser.add_argument(
-        "--kappa",
+        "--active-cycles-min",
         type=float,
-        default=1.0,
-        metavar="K",
+        default=None,
+        metavar="N",
         help=(
-            "Bearing stiffness anisotropy ratio kappa = ωny/ωnx (default 1.0 = isotropic). "
-            "Typical range 0.70-0.90 for asymmetric journal bearings. "
-            "Affects misalignment orbit shape: kappa<1 produces a tilted banana orbit."
+            "[transient] Min active cycles for per-file random sampling. "
+            "Must be used with --active-cycles-max. Overrides --active-cycles."
         ),
+    )
+    arg_parser.add_argument(
+        "--active-cycles-max",
+        type=float,
+        default=None,
+        metavar="N",
+        help="[transient] Max active cycles for per-file random sampling.",
+    )
+    arg_parser.add_argument(
+        "--silent-cycles-min",
+        type=float,
+        default=None,
+        metavar="N",
+        help=(
+            "[transient] Min silent cycles for per-file random sampling. "
+            "Must be used with --silent-cycles-max. Overrides --silent-cycles."
+        ),
+    )
+    arg_parser.add_argument(
+        "--silent-cycles-max",
+        type=float,
+        default=None,
+        metavar="N",
+        help="[transient] Max silent cycles for per-file random sampling.",
     )
 
     args = arg_parser.parse_args()
@@ -430,16 +497,14 @@ def main() -> None:
         severity_fixed = Severity[args.severity].value
         severity_label_fixed = args.severity.lower()
 
-    transient_cfg = (
-        TransientConfig(
-            active_cycles=args.active_cycles,
-            silent_cycles=args.silent_cycles,
-        )
-        if args.transient
-        else None
+    # Stage 2: detect transient range mode (per-file random sampling)
+    _transient_range_mode = (
+        args.transient
+        and args.active_cycles_min is not None
+        and args.active_cycles_max is not None
     )
 
-    transient_suffix = "_transient" if transient_cfg is not None else ""
+    transient_suffix = "_transient" if args.transient else ""
 
     # Resolve output directory
     if args.output_dir is not None:
@@ -472,6 +537,22 @@ def main() -> None:
             stem = f"{args.fault}_{severity_label}{transient_suffix}"
         output_path = str(out_dir / f"{stem}_{i:0{n_digits}d}.bin")
 
+        # Stage 2: create per-file TransientConfig (fixed or range-sampled)
+        if args.transient:
+            if _transient_range_mode:
+                _act = random.uniform(args.active_cycles_min, args.active_cycles_max)
+                _sil_min = args.silent_cycles_min if args.silent_cycles_min is not None else args.silent_cycles
+                _sil_max = args.silent_cycles_max if args.silent_cycles_max is not None else args.silent_cycles
+                _sil = random.uniform(_sil_min, _sil_max)
+                transient_cfg = TransientConfig(active_cycles=_act, silent_cycles=_sil)
+            else:
+                transient_cfg = TransientConfig(
+                    active_cycles=args.active_cycles,
+                    silent_cycles=args.silent_cycles,
+                )
+        else:
+            transient_cfg = None
+
         try:
             run(
                 input_path=input_path,
@@ -479,7 +560,6 @@ def main() -> None:
                 severity_value=severity_value,
                 output_path=output_path,
                 transient_cfg=transient_cfg,
-                kappa=args.kappa,
             )
         except Exception as e:
             tqdm.write(f"[Error] {output_path}: {e}", file=sys.stderr)

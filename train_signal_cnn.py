@@ -125,6 +125,8 @@ def main() -> None:
                     choices=["auto", "cpu", "cuda", "mps"])
     ap.add_argument("--workers", type=int, default=0,
                     help="DataLoader num_workers (0 = main process, safe on Windows)")
+    ap.add_argument("--patience", type=int, default=10,
+                    help="Early stopping patience (epochs without val_loss improvement, 0=off)")
     args = ap.parse_args()
 
     # ---- Device ----------------------------------------------------------
@@ -201,6 +203,7 @@ def main() -> None:
     # ---- Training loop ---------------------------------------------------
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
     best_val_loss = float("inf")
+    no_improve    = 0
     history: list[dict] = []
 
     header = (
@@ -232,6 +235,7 @@ def main() -> None:
 
         if val["loss"] < best_val_loss:
             best_val_loss = val["loss"]
+            no_improve    = 0
             ckpt_path = CKPT_DIR / "signal_cnn_best.pt"
             torch.save(
                 {
@@ -243,6 +247,12 @@ def main() -> None:
                 },
                 ckpt_path,
             )
+        else:
+            no_improve += 1
+            if args.patience > 0 and no_improve >= args.patience:
+                print(f"\nEarly stopping at epoch {epoch} "
+                      f"(no improvement for {args.patience} epochs)")
+                break
 
     # ---- Save history ----------------------------------------------------
     history_path = CKPT_DIR / "signal_train_history.json"

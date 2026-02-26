@@ -26,7 +26,8 @@ import time
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, random_split
+import torchvision.transforms as T
+from torch.utils.data import DataLoader, Dataset, random_split
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -36,6 +37,30 @@ from src.models.orbit_cnn import HierarchicalLoss, HierarchicalOrbitCNN
 ORBIT_ROOT = Path("data") / "orbit_images"
 CKPT_DIR   = Path("data") / "checkpoints"
 
+
+
+class _AugSubset(Dataset):
+    """학습셋 전용 augmentation 래퍼.
+
+    val/test Subset에는 적용하지 않아 평가 일관성을 유지한다.
+    - RandomRotation(180): orbit 위상 방향 랜덤화 (±180° → 360° 전체 커버)
+    - RandomHorizontalFlip: misalignment/oil_whip orbit 거울상 다양화
+    """
+
+    _TRANSFORM = T.Compose([
+        T.RandomRotation(degrees=180),
+        T.RandomHorizontalFlip(),
+    ])
+
+    def __init__(self, subset: Dataset) -> None:
+        self.subset = subset
+
+    def __len__(self) -> int:
+        return len(self.subset)
+
+    def __getitem__(self, idx: int):
+        img, binary_label, fault_label = self.subset[idx]
+        return self._TRANSFORM(img), binary_label, fault_label
 
 
 def run_epoch(
@@ -156,7 +181,7 @@ def main() -> None:
     binary_weight  = (len(train_samples) / class_counts).sqrt().to(device)
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size,
+        _AugSubset(train_ds), batch_size=args.batch_size,
         shuffle=True, num_workers=args.workers,
         pin_memory=(device.type == "cuda"),
     )
