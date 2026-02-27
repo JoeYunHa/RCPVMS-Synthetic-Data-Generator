@@ -277,15 +277,22 @@ def run(
         raise ValueError(f"Unknown fault type: {fault_type!r}")
 
     # Stage 3: Per-bearing-pair amplitude modulation.
-    # Each bearing plane gets an independent amplitude scale to simulate
-    # spatial variation in fault propagation across bearing locations.
-    n_pairs = total_ch // 2
-    bearing_scales = np.random.uniform(*BEARING_AMP_SCALE_RANGE, size=n_pairs)
-    tqdm.write(f"      bearing_scales(12): {np.round(bearing_scales, 3).tolist()}")
-    fault_signals = [
-        (x_fault if ch_idx % 2 == 0 else y_fault) * bearing_scales[ch_idx // 2]
-        for ch_idx in range(total_ch)
-    ]
+    # Only inject into actual bearing XY channel pairs (BEARING_PAIRS).
+    # Non-bearing channels (e.g. ch 2-3, 6-9, 12-15) receive zero fault signal.
+    _BEARING_PAIRS = ((0, 1), (4, 5), (10, 11), (16, 17))
+    bearing_scales = np.random.uniform(*BEARING_AMP_SCALE_RANGE, size=len(_BEARING_PAIRS))
+    tqdm.write(f"      bearing_scales(4 pairs): {np.round(bearing_scales, 3).tolist()}")
+
+    # Initialise all channels with zero fault signal
+    fault_signals = [np.zeros(len(channels_raw[ch]), dtype=np.float32)
+                     for ch in range(total_ch)]
+    # Inject only into valid bearing XY channels
+    for pair_idx, (ch_x, ch_y) in enumerate(_BEARING_PAIRS):
+        scale = bearing_scales[pair_idx]
+        if ch_x < total_ch:
+            fault_signals[ch_x] = x_fault * scale
+        if ch_y < total_ch:
+            fault_signals[ch_y] = y_fault * scale
 
     # ── 4. Fault Injection ────────────────────────────────────────────────────
     tqdm.write("[4/5] Injecting fault...")

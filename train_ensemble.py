@@ -148,7 +148,17 @@ def main() -> None:
             print(f"ERROR: {name} dataset is empty.", file=sys.stderr)
             sys.exit(1)
 
-    # 동일 seed 분할 → 인덱스 대응 보장
+    # 두 데이터셋 크기가 다르면 동일 seed 분할로도 인덱스 대응이 깨짐 → 사전 검증
+    if len(sig_ds) != len(orb_ds):
+        print(
+            f"ERROR: Signal ({len(sig_ds)}) and Orbit ({len(orb_ds)}) dataset sizes differ. "
+            "Index correspondence cannot be guaranteed — check that both datasets "
+            "scan the same BIN files.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 동일 seed + 동일 크기 분할 → 인덱스 대응 보장
     gen = torch.Generator().manual_seed(42)
     n_val_sig = int(len(sig_ds) * args.val_split)
     sig_train, sig_val = random_split(
@@ -159,6 +169,12 @@ def main() -> None:
     n_val_orb = int(len(orb_ds) * args.val_split)
     orb_train, orb_val = random_split(
         orb_ds, [len(orb_ds) - n_val_orb, n_val_orb], generator=gen
+    )
+
+    # 분할 결과 크기 일치 재확인 (방어적 검증)
+    assert len(sig_train) == len(orb_train) and len(sig_val) == len(orb_val), (
+        f"Split size mismatch after random_split: "
+        f"sig=({len(sig_train)},{len(sig_val)}) orb=({len(orb_train)},{len(orb_val)})"
     )
 
     # shuffle=False: zip 대응을 위해 순서 고정
