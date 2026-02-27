@@ -289,7 +289,7 @@ def main() -> None:
     ap.add_argument("--window",      type=int,   default=40_000,
                     help="Window length in samples")
     ap.add_argument("--rpms",        nargs="+",
-                    default=["unknown", "1200rpm", "3600rpm"],
+                    default=["1200rpm"],
                     help="RPM keys to include (subsets of NORMAL_DIRS)")
     ap.add_argument("--device",      default="auto",
                     choices=["auto", "cpu", "cuda", "mps"])

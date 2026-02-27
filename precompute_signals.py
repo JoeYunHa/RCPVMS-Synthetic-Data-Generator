@@ -13,13 +13,11 @@ venv\\Scripts\\python.exe precompute_signals.py --overwrite
 Output layout
 -------------
 data/signal_cache/
-  3600rpm/
+  1200rpm/
     normal/        {stem}.npy   shape (8, N_samples), float32, DC-removed
     unbalance/     {stem}.npy
     misalignment/  {stem}.npy
     oil_whip/      {stem}.npy
-  1200rpm/
-    ...
 
 Storage estimate: ~12.8 MB per file × 1010 files ≈ 12.9 GB
   (8 channels × 400,000 samples × 4 bytes)
@@ -42,11 +40,9 @@ CACHE_ROOT   = DATA_ROOT / "signal_cache"
 FAULT_TYPES  = ("unbalance", "misalignment", "oil_whip")
 
 RPM_NORMAL_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "raw" / "normal_3600rpm",
     "1200rpm": DATA_ROOT / "raw" / "normal_1200rpm",
 }
 RPM_FAULT_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "synthetic" / "3600rpm",
     "1200rpm": DATA_ROOT / "synthetic" / "1200rpm",
 }
 
@@ -112,7 +108,7 @@ def main() -> None:
         description="Pre-compute 8-channel signal .npy files"
     )
     ap.add_argument(
-        "--rpms", nargs="+", default=["3600rpm", "1200rpm"],
+        "--rpms", nargs="+", default=["1200rpm"],
         help="RPM conditions to process (default: both)",
     )
     ap.add_argument(

@@ -38,8 +38,8 @@ FAULT_TYPES = ["unbalance", "misalignment", "oil_whip"]
 
 # RPM 계열 파일명 패턴
 RPM_PATTERNS = {
-    "3600rpm": "RCPVMS_BKG_250*.BIN",   # 2506~2507 계열
-    "1200rpm": "RCPVMS_BKG_251*.BIN",   # 2511 계열
+    # "3600rpm" excluded: data quality issues (sensor saturation / near-zero amplitude)
+    "1200rpm": "RCPVMS_BKG_251*.BIN",   # 2511 series
 }
 
 # 생성 수량 / 심각도
@@ -184,8 +184,8 @@ def main():
         help="실제 생성 없이 실행 계획만 출력",
     )
     ap.add_argument(
-        "--rpm", choices=["3600rpm", "1200rpm", "both"], default="both",
-        help="생성할 RPM 조건 (기본: both)",
+        "--rpm", choices=["1200rpm"], default="1200rpm",
+        help="RPM condition to generate (3600 rpm excluded: data quality issues)",
     )
     ap.add_argument(
         "--mode", choices=["continuous", "transient", "all"], default="all",
@@ -205,7 +205,7 @@ def main():
     )
     args = ap.parse_args()
 
-    rpm_targets   = list(RPM_PATTERNS.keys()) if args.rpm   == "both" else [args.rpm]
+    rpm_targets   = [args.rpm]
     mode_targets  = list(GEN.keys())          if args.mode  == "all"  else [args.mode]
     fault_targets = args.fault if args.fault is not None else FAULT_TYPES
 

@@ -14,13 +14,11 @@ venv\\Scripts\\python.exe precompute_orbits.py --dry-run
 Output layout
 -------------
 data/orbit_images/
-  3600rpm/
+  1200rpm/
     normal/          {stem}.npy   (shape 4×256×256, float32)
     unbalance/
     misalignment/
     oil_whip/
-  1200rpm/
-    ...
 """
 
 import argparse
@@ -44,11 +42,9 @@ DATA_ROOT  = Path("data")
 ORBIT_ROOT = DATA_ROOT / "orbit_images"
 
 RPM_NORMAL_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "raw" / "normal_3600rpm",
     "1200rpm": DATA_ROOT / "raw" / "normal_1200rpm",
 }
 RPM_FAULT_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "synthetic" / "3600rpm",
     "1200rpm": DATA_ROOT / "synthetic" / "1200rpm",
 }
 FAULT_TYPES = ("unbalance", "misalignment", "oil_whip")
@@ -132,7 +128,7 @@ def main() -> None:
         description="Pre-compute orbit images from BIN files"
     )
     ap.add_argument(
-        "--rpms", nargs="+", default=["3600rpm", "1200rpm"],
+        "--rpms", nargs="+", default=["1200rpm"],
         help="RPM conditions to process (default: both)",
     )
     ap.add_argument(

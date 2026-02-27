@@ -132,7 +132,7 @@ def main() -> None:
     ap.add_argument("--dropout",      type=float, default=0.4)
     ap.add_argument("--img_size",     type=int,   default=256,
                     help="Orbit image pixel size (default 256)")
-    ap.add_argument("--rpms",         nargs="+",  default=["3600rpm", "1200rpm"])
+    ap.add_argument("--rpms",         nargs="+",  default=["1200rpm"])
     ap.add_argument("--no_transient", action="store_true",
                     help="Exclude transient fault files from training")
     ap.add_argument("--device", default="auto",

@@ -4,10 +4,8 @@ On-the-fly orbit image generation directly from BIN files.
 precompute_orbits.py / data/orbit_images/ 는 더 이상 필요하지 않다.
 
 Directory layout expected:
-  data/raw/normal_3600rpm/   *.BIN
   data/raw/normal_1200rpm/   *.BIN
-  data/synthetic/3600rpm/{unbalance,misalignment,oil_whip}/  *.bin
-  data/synthetic/1200rpm/{...}
+  data/synthetic/1200rpm/{unbalance,misalignment,oil_whip}/  *.bin
 
 Each __getitem__ returns:
   image        : FloatTensor (4, H, W)
@@ -45,11 +43,9 @@ BINARY_NAMES: list[str] = ["normal", "fault"]
 
 DATA_ROOT = Path("data")
 RPM_NORMAL_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "raw" / "normal_3600rpm",
     "1200rpm": DATA_ROOT / "raw" / "normal_1200rpm",
 }
 RPM_FAULT_DIRS: dict[str, Path] = {
-    "3600rpm": DATA_ROOT / "synthetic" / "3600rpm",
     "1200rpm": DATA_ROOT / "synthetic" / "1200rpm",
 }
 
@@ -77,7 +73,7 @@ class OrbitDataset(Dataset):
 
     def __init__(
         self,
-        rpms: tuple[str, ...] = ("3600rpm", "1200rpm"),
+        rpms: tuple[str, ...] = ("1200rpm",),
         include_transient: bool = True,
         axis_lim: float = DEFAULT_AXIS_LIM,
         img_size: int = DEFAULT_IMG_SIZE,

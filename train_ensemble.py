@@ -108,7 +108,7 @@ def main() -> None:
     ap.add_argument("--lr",           type=float, default=1e-2)
     ap.add_argument("--val_split",    type=float, default=0.2)
     ap.add_argument("--patience",     type=int,   default=10)
-    ap.add_argument("--rpms",         nargs="+",  default=["3600rpm", "1200rpm"])
+    ap.add_argument("--rpms",         nargs="+",  default=["1200rpm"])
     ap.add_argument("--no_transient", action="store_true")
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cpu", "cuda", "mps"])

@@ -14,7 +14,7 @@ Prerequisites
 Usage
 -----
 venv\\Scripts\\python.exe evaluate_ensemble.py
-venv\\Scripts\\python.exe evaluate_ensemble.py --alpha 0.6 --rpms 3600rpm
+venv\\Scripts\\python.exe evaluate_ensemble.py --alpha 0.6
 venv\\Scripts\\python.exe evaluate_ensemble.py --no_transient
 
 출력 예시
@@ -182,7 +182,7 @@ def main() -> None:
                     help="train_ensemble.py 출력 체크포인트 (Method B 학습 가중치)")
     ap.add_argument("--val_split",   type=float, default=0.2)
     ap.add_argument("--batch_size",  type=int,   default=16)
-    ap.add_argument("--rpms",        nargs="+",  default=["3600rpm", "1200rpm"])
+    ap.add_argument("--rpms",        nargs="+",  default=["1200rpm"])
     ap.add_argument("--no_transient", action="store_true")
     ap.add_argument("--device", default="auto",
                     choices=["auto", "cpu", "cuda", "mps"])

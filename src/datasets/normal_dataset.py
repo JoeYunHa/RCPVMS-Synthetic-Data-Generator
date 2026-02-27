@@ -6,7 +6,6 @@ Returns 8-channel windowed signals with RPM metadata.
 Directory layout:
   data/raw/normal/           *.BIN  (RPM 미분류)
   data/raw/normal_1200rpm/   *.BIN
-  data/raw/normal_3600rpm/   *.BIN
 """
 
 from __future__ import annotations
@@ -25,13 +24,12 @@ DEFAULT_WINDOW_SAMPLES: int = 40_000
 DATA_ROOT = Path("data")
 
 # (directory_path, rpm_label)
-# rpm_label: 0=unknown, 1=1200rpm, 2=3600rpm
+# rpm_label: 0=unknown, 1=1200rpm
 NORMAL_DIRS: dict[str, tuple[Path, int]] = {
     "unknown": (DATA_ROOT / "raw" / "normal",        0),
     "1200rpm": (DATA_ROOT / "raw" / "normal_1200rpm", 1),
-    "3600rpm": (DATA_ROOT / "raw" / "normal_3600rpm", 2),
 }
-RPM_LABEL_NAMES: dict[int, str] = {0: "unknown", 1: "1200rpm", 2: "3600rpm"}
+RPM_LABEL_NAMES: dict[int, str] = {0: "unknown", 1: "1200rpm"}
 
 
 class NormalDataset(Dataset):
@@ -46,12 +44,12 @@ class NormalDataset(Dataset):
     Returns (per __getitem__)
     -------------------------
     signal_tensor : FloatTensor (8, window_samples)  DC-removed
-    rpm_label     : LongTensor scalar  0=unknown / 1=1200rpm / 2=3600rpm
+    rpm_label     : LongTensor scalar  0=unknown / 1=1200rpm
     """
 
     def __init__(
         self,
-        rpms: tuple[str, ...] = ("unknown", "1200rpm", "3600rpm"),
+        rpms: tuple[str, ...] = ("1200rpm",),
         window_samples: int = DEFAULT_WINDOW_SAMPLES,
         training: bool = True,
     ) -> None:
